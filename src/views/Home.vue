@@ -4,44 +4,41 @@
             <h1 class="app-title">AI 魔法衣橱</h1>
 
             <div class="canvas-wrapper" :style="{ height: containerHeight + 'px' }">
-                <input type="file" accept="image/*" @change="handleImageUpload" class="file-input" />
+
+                <input v-if="!imageUrl" type="file" accept="image/*" @change="handleImageUpload" class="file-input" />
 
                 <img v-if="imageUrl" :src="imageUrl" ref="uploadedImage" class="preview-img" @load="onImageLoad" />
 
-                <div v-else class="upload-placeholder">
+                <div v-if="!imageUrl" class="upload-placeholder">
                     <div class="plus-icon">+</div>
                     <p>点击上传模特照片</p>
-                    <p class="sub-tip">图片将以 96% 宽度显示，支持长图</p>
+                    <p class="sub-tip">上传后支持 1px 精细涂抹</p>
                 </div>
 
-                <canvas ref="drawingCanvas" class="drawing-canvas" @mousedown="startDrawing" @mousemove="draw" @mouseup="endDrawing" @touchstart.prevent="startDrawing" @touchmove.prevent="draw" @touchend.prevent="endDrawing"></canvas>
+                <canvas ref="drawingCanvas" class="drawing-canvas" @touchstart.prevent="startDrawing" @touchmove.prevent="draw" @touchend.prevent="endDrawing" @mousedown="startDrawing" @mousemove="draw" @mouseup="endDrawing" @mouseleave="endDrawing"></canvas>
             </div>
 
             <div class="control-panel">
-                <button @click="isMagicSelecting = !isMagicSelecting" :class="['mode-btn', isMagicSelecting ? 'magic-active' : '']">
-                    {{ isMagicSelecting ? '✨ 智能选择模式' : '🖐️ 手动涂抹模式' }}
-                </button>
-
-                <div class="setting-group">
-                    <div class="setting-header">
-                        <span>画笔粗细: {{ brushSize }}px</span>
-                        <span @click="clearCanvas" class="clear-link">重置</span>
+                <div class="tool-box">
+                    <div class="tool-header">
+                        <span class="label">画笔粗细: <strong>{{ brushSize }}px</strong></span>
+                        <button @click="clearCanvas" class="btn-clear">重新涂抹</button>
                     </div>
-                    <input type="range" v-model.number="brushSize" min="5" max="60" class="range-input" />
+                    <input type="range" v-model.number="brushSize" min="1" max="80" class="slider" />
                 </div>
 
-                <div class="setting-group">
-                    <label class="input-label">新衣服描述</label>
-                    <textarea v-model="prompt" placeholder="描述你想要换上的衣服..." class="prompt-input"></textarea>
+                <div class="input-box">
+                    <label class="label">新衣服描述 (Prompt)</label>
+                    <textarea v-model="prompt" placeholder="例如：一件剪裁精致的白色真丝衬衫..." class="text-area"></textarea>
                 </div>
 
-                <button @click="generateSwap" :disabled="!imageUrl || !prompt" class="generate-btn">
+                <button @click="onGenerate" :disabled="!imageUrl || !prompt" class="submit-btn">
                     开始魔法换装
                 </button>
             </div>
 
-            <div v-if="resultImageUrl" class="result-box">
-                <p class="result-tag">生成结果</p>
+            <div v-if="resultImageUrl" class="result-section">
+                <p class="result-title">✨ 换装完成</p>
                 <img :src="resultImageUrl" class="result-img" />
             </div>
         </div>
@@ -50,17 +47,16 @@
 
 <script>
 export default {
-    name: 'MobileSwapUI',
+    name: 'GeminiInpaintUI',
     data() {
         return {
             imageUrl: '',
             resultImageUrl: '',
             prompt: '',
-            brushSize: 20,
-            isMagicSelecting: false,
+            brushSize: 20, // 初始默认大小
             isDrawing: false,
             ctx: null,
-            containerHeight: 300 // 默认高度，图片加载后会动态变
+            containerHeight: 320
         };
     },
     methods: {
@@ -72,15 +68,11 @@ export default {
             }
         },
 
-        // 核心优化：图片加载后，动态计算高度，让 Canvas 完美贴合
         onImageLoad() {
             const img = this.$refs.uploadedImage;
             const canvas = this.$refs.drawingCanvas;
-
-            // 1. 设置容器高度为图片渲染后的实际高度
             this.containerHeight = img.clientHeight;
 
-            // 2. 延迟一下确保 DOM 更新后初始化 Canvas
             this.$nextTick(() => {
                 this.ctx = canvas.getContext('2d');
                 canvas.width = img.clientWidth;
@@ -89,44 +81,44 @@ export default {
                 this.ctx.lineCap = 'round';
                 this.ctx.lineJoin = 'round';
                 this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
-                this.ctx.lineWidth = this.brushSize;
             });
         },
 
-        getPos(e) {
+        getCoordinates(e) {
             const canvas = this.$refs.drawingCanvas;
             const rect = canvas.getBoundingClientRect();
-            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
-            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
-            return {
-                x: clientX - rect.left,
-                y: clientY - rect.top
-            };
+            let clientX, clientY;
+            if (e.touches && e.touches[0]) {
+                clientX = e.touches[0].clientX;
+                clientY = e.touches[0].clientY;
+            } else {
+                clientX = e.clientX;
+                clientY = e.clientY;
+            }
+            return { x: clientX - rect.left, y: clientY - rect.top };
         },
 
         startDrawing(e) {
-            if (!this.imageUrl) return;
-            if (this.isMagicSelecting) {
-                this.mockMagicSelect(this.getPos(e));
-                return;
-            }
+            if (!this.imageUrl || !this.ctx) return;
             this.isDrawing = true;
-            const pos = this.getPos(e);
+            const pos = this.getCoordinates(e);
             this.ctx.beginPath();
             this.ctx.moveTo(pos.x, pos.y);
         },
 
         draw(e) {
-            if (!this.isDrawing) return;
-            const pos = this.getPos(e);
+            if (!this.isDrawing || !this.ctx) return;
+            const pos = this.getCoordinates(e);
             this.ctx.lineWidth = this.brushSize;
             this.ctx.lineTo(pos.x, pos.y);
             this.ctx.stroke();
         },
 
         endDrawing() {
-            this.isDrawing = false;
-            if (this.ctx) this.ctx.closePath();
+            if (this.isDrawing) {
+                this.ctx.closePath();
+                this.isDrawing = false;
+            }
         },
 
         clearCanvas() {
@@ -135,15 +127,48 @@ export default {
             }
         },
 
-        mockMagicSelect(pos) {
-            this.ctx.fillStyle = 'rgba(255, 255, 255, 0.8)';
-            this.ctx.beginPath();
-            this.ctx.arc(pos.x, pos.y, 60, 0, Math.PI * 2);
-            this.ctx.fill();
+        // 获取纯黑白蒙版的 Base64
+        async getMaskBase64() {
+            const canvas = this.$refs.drawingCanvas;
+            const img = this.$refs.uploadedImage;
+
+            const tempCanvas = document.createElement('canvas');
+            tempCanvas.width = img.naturalWidth;
+            tempCanvas.height = img.naturalHeight;
+            const tCtx = tempCanvas.getContext('2d');
+
+            // AI 模型要求的标准：背景黑，涂抹区白
+            tCtx.fillStyle = 'black';
+            tCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
+
+            tCtx.lineCap = 'round';
+            tCtx.lineJoin = 'round';
+            tCtx.strokeStyle = 'white';
+
+            // 按比例把当前涂抹层画到高清画布上
+            const scale = img.naturalWidth / canvas.width;
+            tCtx.scale(scale, scale);
+            tCtx.drawImage(canvas, 0, 0);
+
+            return tempCanvas.toDataURL('image/png');
         },
 
-        generateSwap() {
-            alert("数据已封装，准备发送至 Node.js 后端！");
+        // 提交逻辑
+        async onGenerate() {
+            const maskBase64 = await this.getMaskBase64();
+
+            // 构建提交参数
+            const params = {
+                prompt: this.prompt,
+                brush_size_px: this.brushSize,
+                init_image: this.imageUrl, // 预览用链接
+                mask_data: maskBase64.substring(0, 50) + "..." // 打印时截断防刷屏
+            };
+
+            console.log("%c🚀 准备提交给 Node.js 的参数：", "color: #3b82f6; font-size: 16px; font-weight: bold;");
+            console.table(params);
+
+            alert("提交成功！请打开浏览器开发者工具 (F12) 查看 Console 打印的参数。");
         }
     }
 };
@@ -151,141 +176,181 @@ export default {
 
 <style scoped>
 .mobile-container {
-    background-color: #111827;
+    background-color: #0f172a;
     min-height: 100vh;
     display: flex;
     justify-content: center;
-    padding: 16px 0; /* 左右不留白，靠 card 控制 */
+    padding: 20px 0;
     box-sizing: border-box;
 }
 
 .app-card {
-    width: 96%; /* 宽度占 96% */
-    display: flex;
-    flex-direction: column;
+    width: 96%;
+    max-width: 500px;
 }
 
 .app-title {
     color: #ffffff;
-    font-size: 22px;
+    font-size: 24px;
+    font-weight: bold;
     text-align: center;
-    margin-bottom: 16px;
+    margin-bottom: 20px;
+    text-transform: uppercase;
+    letter-spacing: 2px;
 }
 
-/* 核心优化：自适应高度的画布容器 */
 .canvas-wrapper {
     position: relative;
     width: 100%;
-    background-color: #1f2937;
-    border-radius: 12px;
+    background-color: #1e293b;
+    border-radius: 20px;
     overflow: hidden;
-    border: 1px solid #374151;
-    /* 不再写死 height */
-    transition: height 0.3s ease;
+    border: 1px solid #334155;
+    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
 }
 
 .file-input {
     position: absolute;
     inset: 0;
     opacity: 0;
-    z-index: 10;
+    z-index: 50;
+    cursor: pointer;
 }
 
 .preview-img {
     display: block;
-    width: 100%; /* 图片宽度撑满容器 */
-    height: auto; /* 高度根据比例自适应 */
+    width: 100%;
+    height: auto;
+    pointer-events: none;
 }
 
 .drawing-canvas {
     position: absolute;
     top: 0;
     left: 0;
-    z-index: 5;
-    touch-action: none; /* 极其重要：防止手机涂抹时页面乱滚 */
+    z-index: 40;
+    touch-action: none;
 }
 
 .upload-placeholder {
-    height: 300px; /* 没图时的默认占位高度 */
+    height: 320px;
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    color: #9ca3af;
+    color: #94a3b8;
 }
 
 .plus-icon {
-    font-size: 50px;
-}
-.sub-tip {
-    font-size: 12px;
-    margin-top: 8px;
-    opacity: 0.6;
+    font-size: 64px;
+    font-weight: 100;
+    margin-bottom: 10px;
 }
 
-/* 其他 UI 保持不变 */
 .control-panel {
-    margin-top: 16px;
+    margin-top: 24px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 16px;
 }
-.mode-btn {
-    background-color: #374151;
-    color: white;
-    padding: 12px;
-    border-radius: 10px;
-    border: none;
+
+.tool-box,
+.input-box {
+    background-color: #1e293b;
+    padding: 18px;
+    border-radius: 16px;
+    border: 1px solid #334155;
 }
-.magic-active {
-    background: linear-gradient(to right, #7c3aed, #4f46e5);
-}
-.setting-group {
-    background-color: #1f2937;
-    padding: 12px;
-    border-radius: 10px;
-}
-.setting-header {
+
+.tool-header {
     display: flex;
     justify-content: space-between;
-    color: #d1d5db;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.label {
     font-size: 14px;
-    margin-bottom: 8px;
+    color: #94a3b8;
+    font-weight: 500;
 }
-.clear-link {
+.btn-clear {
+    background: rgba(248, 113, 113, 0.1);
+    border: 1px solid rgba(248, 113, 113, 0.2);
     color: #f87171;
-}
-.range-input {
-    width: 100%;
-    appearance: none;
-    background: #4b5563;
-    height: 4px;
-    border-radius: 2px;
-}
-.input-label {
-    color: #9ca3af;
+    padding: 4px 12px;
+    border-radius: 20px;
     font-size: 12px;
-    margin-bottom: 4px;
-    display: block;
 }
-.prompt-input {
+
+.slider {
+    width: 100%;
+    height: 8px;
+    background: #0f172a;
+    border-radius: 4px;
+    appearance: none;
+    outline: none;
+}
+
+/* 滑块头美化 */
+.slider::-webkit-slider-thumb {
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    background: #3b82f6;
+    border-radius: 50%;
+    cursor: pointer;
+    border: 2px solid #fff;
+}
+
+.text-area {
     width: 100%;
     box-sizing: border-box;
-    background: #111827;
-    border: 1px solid #374151;
-    color: white;
-    padding: 10px;
-    border-radius: 8px;
-    font-size: 14px;
-}
-.generate-btn {
-    background: #2563eb;
-    color: white;
+    background-color: #0f172a;
+    border: 1px solid #334155;
+    color: #fff;
     padding: 14px;
-    border-radius: 10px;
+    border-radius: 12px;
+    margin-top: 8px;
+    min-height: 90px;
+    font-size: 14px;
+    line-height: 1.6;
+}
+
+.submit-btn {
+    background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+    color: white;
+    padding: 18px;
+    border-radius: 16px;
     border: none;
-    font-weight: bold;
-    font-size: 16px;
-    margin-bottom: 40px;
+    font-size: 18px;
+    font-weight: 800;
+    box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.4);
+    margin-top: 8px;
+}
+
+.submit-btn:disabled {
+    opacity: 0.2;
+    filter: grayscale(1);
+}
+.submit-btn:active {
+    transform: scale(0.97);
+}
+
+.result-section {
+    margin-top: 32px;
+    padding-bottom: 40px;
+}
+
+.result-title {
+    color: #60a5fa;
+    margin-bottom: 12px;
+    font-weight: 600;
+    text-align: center;
+}
+.result-img {
+    width: 100%;
+    border-radius: 16px;
+    border: 2px solid #3b82f6;
 }
 </style>
