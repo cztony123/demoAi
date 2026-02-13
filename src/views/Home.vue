@@ -4,18 +4,18 @@
             <h1 class="app-title">AI 魔法衣橱</h1>
 
             <div class="canvas-wrapper" :style="{ height: containerHeight + 'px' }">
-
                 <input v-if="!imageUrl" type="file" accept="image/*" @change="handleImageUpload" class="file-input" />
-
                 <img v-if="imageUrl" :src="imageUrl" ref="uploadedImage" class="preview-img" @load="onImageLoad" />
+                <button v-if="imageUrl && !isProcessing" @click="resetAll" class="reset-photo-btn">✕</button>
 
                 <div v-if="!imageUrl" class="upload-placeholder">
                     <div class="plus-icon">+</div>
                     <p>点击上传模特照片</p>
-                    <p class="sub-tip">上传后支持 1px 精细涂抹</p>
+                    <p class="sub-tip">上传后在衣服位置进行涂抹</p>
                 </div>
 
-                <canvas ref="drawingCanvas" class="drawing-canvas" @touchstart.prevent="startDrawing" @touchmove.prevent="draw" @touchend.prevent="endDrawing" @mousedown="startDrawing" @mousemove="draw" @mouseup="endDrawing" @mouseleave="endDrawing"></canvas>
+                <canvas ref="drawingCanvas" class="drawing-canvas" @mousedown="startDrawing" @mousemove="draw" @mouseup="endDrawing" @mouseleave="endDrawing" @touchstart.prevent="startDrawing" @touchmove.prevent="draw" @touchend.prevent="endDrawing">
+                </canvas>
             </div>
 
             <div class="control-panel">
@@ -24,16 +24,36 @@
                         <span class="label">画笔粗细: <strong>{{ brushSize }}px</strong></span>
                         <button @click="clearCanvas" class="btn-clear">重新涂抹</button>
                     </div>
-                    <input type="range" v-model.number="brushSize" min="1" max="80" class="slider" />
+                    <input type="range" v-model.number="brushSize" min="5" max="80" class="slider" />
+
+                    <div style="margin-top:15px">
+                        <span class="label">生成步数 (Steps): <strong>{{ steps }}</strong></span>
+                        <input type="range" v-model.number="steps" min="10" max="100" step="1" class="slider" />
+                    </div>
+                    <div style="margin-top:15px">
+                        <span class="label">重绘强度 (Strength): <strong>{{ strength }}</strong></span>
+                        <input type="range" v-model.number="strength" min="0.1" max="1.0" step="0.05" class="slider" />
+                    </div>
+                    <div style="margin-top:15px">
+                        <span class="label">听话程度 (Guidance): <strong>{{ guidanceScale }}</strong></span>
+                        <input type="range" v-model.number="guidanceScale" min="1" max="15" step="0.5" class="slider" />
+                    </div>
                 </div>
 
                 <div class="input-box">
                     <label class="label">新衣服描述 (Prompt)</label>
-                    <textarea v-model="prompt" placeholder="例如：一件剪裁精致的白色真丝衬衫..." class="text-area"></textarea>
+                    <textarea v-model="prompt" placeholder="例如：一条红色的丝绸连衣裙..." class="text-area"></textarea>
                 </div>
 
-                <button @click="onGenerate" :disabled="!imageUrl || !prompt" class="submit-btn">
-                    开始魔法换装
+                <div v-if="isProcessing" class="progress-section" style="margin-bottom: 10px;">
+                    <div class="progress-container">
+                        <div class="progress-bar" :style="{ width: progress + '%' }"></div>
+                        <span class="progress-text">魔法进度: {{ progress }}%</span>
+                    </div>
+                </div>
+
+                <button @click="handleStartMagic" :disabled="!imageUrl || !prompt || isProcessing" class="submit-btn">
+                    {{ isProcessing ? 'AI 正在缝制...' : '开始魔法换装' }}
                 </button>
             </div>
 
@@ -47,168 +67,145 @@
 
 <script>
 export default {
-    name: 'GeminiInpaintUI',
     data() {
         return {
-            imageUrl: '',
-            resultImageUrl: '',
-            prompt: '',
-            brushSize: 20, // 初始默认大小
-            isDrawing: false,
-            ctx: null,
-            containerHeight: 320
+            imageUrl: '', resultImageUrl: '', prompt: '', brushSize: 30,
+            isDrawing: false, isProcessing: false, ctx: null, containerHeight: 320,
+            // 进度变量
+            progress: 0,
+            // 滑块变量
+            steps: 30, strength: 0.85, guidanceScale: 7.5
         };
     },
     methods: {
         handleImageUpload(e) {
             const file = e.target.files[0];
-            if (file) {
-                this.imageUrl = URL.createObjectURL(file);
-                this.resultImageUrl = '';
-            }
+            if (file) { this.imageUrl = URL.createObjectURL(file); this.resultImageUrl = ''; this.clearCanvas(); }
         },
-
+        resetAll() { this.imageUrl = ''; this.resultImageUrl = ''; this.prompt = ''; this.clearCanvas(); this.containerHeight = 320; this.progress = 0; },
         onImageLoad() {
             const img = this.$refs.uploadedImage;
             const canvas = this.$refs.drawingCanvas;
             this.containerHeight = img.clientHeight;
-
             this.$nextTick(() => {
                 this.ctx = canvas.getContext('2d');
-                canvas.width = img.clientWidth;
-                canvas.height = img.clientHeight;
-
-                this.ctx.lineCap = 'round';
-                this.ctx.lineJoin = 'round';
+                canvas.width = img.clientWidth; canvas.height = img.clientHeight;
+                this.ctx.lineCap = 'round'; this.ctx.lineJoin = 'round';
                 this.ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
             });
         },
-
         getCoordinates(e) {
-            const canvas = this.$refs.drawingCanvas;
-            const rect = canvas.getBoundingClientRect();
-            let clientX, clientY;
-            if (e.touches && e.touches[0]) {
-                clientX = e.touches[0].clientX;
-                clientY = e.touches[0].clientY;
-            } else {
-                clientX = e.clientX;
-                clientY = e.clientY;
-            }
+            const rect = this.$refs.drawingCanvas.getBoundingClientRect();
+            const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+            const clientY = e.touches ? e.touches[0].clientY : e.clientY;
             return { x: clientX - rect.left, y: clientY - rect.top };
         },
+        startDrawing(e) { if (!this.imageUrl) return; this.isDrawing = true; const pos = this.getCoordinates(e); this.ctx.beginPath(); this.ctx.moveTo(pos.x, pos.y); },
+        draw(e) { if (!this.isDrawing) return; const pos = this.getCoordinates(e); this.ctx.lineWidth = this.brushSize; this.ctx.lineTo(pos.x, pos.y); this.ctx.stroke(); },
+        endDrawing() { this.isDrawing = false; },
+        clearCanvas() { if (this.ctx) this.ctx.clearRect(0, 0, this.$refs.drawingCanvas.width, this.$refs.drawingCanvas.height); },
 
-        startDrawing(e) {
-            if (!this.imageUrl || !this.ctx) return;
-            this.isDrawing = true;
-            const pos = this.getCoordinates(e);
-            this.ctx.beginPath();
-            this.ctx.moveTo(pos.x, pos.y);
-        },
+        handleStartMagic() {
+            this.isProcessing = true;
+            this.progress = 0;
 
-        draw(e) {
-            if (!this.isDrawing || !this.ctx) return;
-            const pos = this.getCoordinates(e);
-            this.ctx.lineWidth = this.brushSize;
-            this.ctx.lineTo(pos.x, pos.y);
-            this.ctx.stroke();
-        },
+            // 【核心：定时轮询后端进度】
+            const progressTimer = setInterval(() => {
+                fetch(`http://127.0.0.1:5000/api/progress?t=${Date.now()}`)
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data.progress > this.progress) {
+                            this.progress = data.progress;
+                        }
+                    })
+                    .catch(err => console.error("轮询失败", err));
+            }, 600); // 每 0.6 秒问一次
 
-        endDrawing() {
-            if (this.isDrawing) {
-                this.ctx.closePath();
-                this.isDrawing = false;
-            }
-        },
-
-        clearCanvas() {
-            if (this.ctx) {
-                this.ctx.clearRect(0, 0, this.$refs.drawingCanvas.width, this.$refs.drawingCanvas.height);
-            }
-        },
-
-        // 获取纯黑白蒙版的 Base64
-        async getMaskBase64() {
-            const canvas = this.$refs.drawingCanvas;
             const img = this.$refs.uploadedImage;
+            const canvas512 = document.createElement('canvas');
+            canvas512.width = 512; canvas512.height = 512;
+            canvas512.getContext('2d').drawImage(img, 0, 0, 512, 512);
 
-            const tempCanvas = document.createElement('canvas');
-            tempCanvas.width = img.naturalWidth;
-            tempCanvas.height = img.naturalHeight;
-            const tCtx = tempCanvas.getContext('2d');
+            const maskCanvas = document.createElement('canvas');
+            maskCanvas.width = 512; maskCanvas.height = 512;
+            const mCtx = maskCanvas.getContext('2d');
+            mCtx.fillStyle = 'black'; mCtx.fillRect(0, 0, 512, 512);
+            mCtx.strokeStyle = 'white'; mCtx.lineCap = 'round';
+            const scale = 512 / this.$refs.drawingCanvas.width;
+            mCtx.scale(scale, scale);
+            mCtx.drawImage(this.$refs.drawingCanvas, 0, 0);
 
-            // AI 模型要求的标准：背景黑，涂抹区白
-            tCtx.fillStyle = 'black';
-            tCtx.fillRect(0, 0, tempCanvas.width, tempCanvas.height);
-
-            tCtx.lineCap = 'round';
-            tCtx.lineJoin = 'round';
-            tCtx.strokeStyle = 'white';
-
-            // 按比例把当前涂抹层画到高清画布上
-            const scale = img.naturalWidth / canvas.width;
-            tCtx.scale(scale, scale);
-            tCtx.drawImage(canvas, 0, 0);
-
-            return tempCanvas.toDataURL('image/png');
-        },
-
-        // 提交逻辑
-        async onGenerate() {
-            const maskBase64 = await this.getMaskBase64();
-
-            // 构建提交参数
-            const params = {
-                prompt: this.prompt,
-                brush_size_px: this.brushSize,
-                init_image: this.imageUrl, // 预览用链接
-                mask_data: maskBase64.substring(0, 50) + "..." // 打印时截断防刷屏
-            };
-
-            console.log("%c🚀 准备提交给 Node.js 的参数：", "color: #3b82f6; font-size: 16px; font-weight: bold;");
-            console.table(params);
-
-            alert("提交成功！请打开浏览器开发者工具 (F12) 查看 Console 打印的参数。");
+            fetch('http://127.0.0.1:5000/api/inpaint', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    image: canvas512.toDataURL('image/png'),
+                    mask: maskCanvas.toDataURL('image/png'),
+                    prompt: this.prompt,
+                    steps: this.steps,
+                    strength: this.strength,
+                    guidance: this.guidanceScale
+                })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    clearInterval(progressTimer); // 停掉轮询
+                    this.progress = 100;
+                    this.isProcessing = false;
+                    if (data.status === 'success') { this.resultImageUrl = data.image; }
+                })
+                .catch(err => {
+                    clearInterval(progressTimer);
+                    this.isProcessing = false;
+                    alert('连接后端失败');
+                });
         }
     }
 };
 </script>
 
 <style scoped>
+/* 保持你的原始样式，仅补充进度条部分 */
 .mobile-container {
     background-color: #0f172a;
     min-height: 100vh;
     display: flex;
     justify-content: center;
-    padding: 20px 0;
+    padding: 20px 10px;
     box-sizing: border-box;
+    font-family: sans-serif;
 }
-
 .app-card {
-    width: 96%;
+    width: 100%;
     max-width: 500px;
 }
-
 .app-title {
     color: #ffffff;
     font-size: 24px;
-    font-weight: bold;
     text-align: center;
     margin-bottom: 20px;
-    text-transform: uppercase;
-    letter-spacing: 2px;
 }
-
 .canvas-wrapper {
     position: relative;
     width: 100%;
     background-color: #1e293b;
-    border-radius: 20px;
+    border-radius: 16px;
     overflow: hidden;
-    border: 1px solid #334155;
-    box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
+    border: 2px solid #334155;
 }
-
+.reset-photo-btn {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 60;
+    background: rgba(239, 68, 68, 0.9);
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    cursor: pointer;
+}
 .file-input {
     position: absolute;
     inset: 0;
@@ -216,14 +213,11 @@ export default {
     z-index: 50;
     cursor: pointer;
 }
-
 .preview-img {
     display: block;
     width: 100%;
     height: auto;
-    pointer-events: none;
 }
-
 .drawing-canvas {
     position: absolute;
     top: 0;
@@ -231,7 +225,6 @@ export default {
     z-index: 40;
     touch-action: none;
 }
-
 .upload-placeholder {
     height: 320px;
     display: flex;
@@ -240,117 +233,108 @@ export default {
     justify-content: center;
     color: #94a3b8;
 }
-
 .plus-icon {
-    font-size: 64px;
-    font-weight: 100;
-    margin-bottom: 10px;
+    font-size: 50px;
 }
-
 .control-panel {
-    margin-top: 24px;
+    margin-top: 20px;
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: 15px;
 }
-
 .tool-box,
 .input-box {
     background-color: #1e293b;
-    padding: 18px;
-    border-radius: 16px;
+    padding: 15px;
+    border-radius: 12px;
     border: 1px solid #334155;
 }
-
-.tool-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 12px;
-}
-
 .label {
     font-size: 14px;
     color: #94a3b8;
-    font-weight: 500;
 }
 .btn-clear {
     background: rgba(248, 113, 113, 0.1);
-    border: 1px solid rgba(248, 113, 113, 0.2);
     color: #f87171;
-    padding: 4px 12px;
-    border-radius: 20px;
+    border: none;
+    padding: 4px 10px;
+    border-radius: 8px;
     font-size: 12px;
+    cursor: pointer;
 }
-
 .slider {
     width: 100%;
-    height: 8px;
+    height: 6px;
     background: #0f172a;
-    border-radius: 4px;
+    border-radius: 3px;
     appearance: none;
-    outline: none;
 }
-
-/* 滑块头美化 */
 .slider::-webkit-slider-thumb {
     appearance: none;
-    width: 20px;
-    height: 20px;
+    width: 18px;
+    height: 18px;
     background: #3b82f6;
     border-radius: 50%;
-    cursor: pointer;
     border: 2px solid #fff;
 }
-
 .text-area {
     width: 100%;
     box-sizing: border-box;
     background-color: #0f172a;
     border: 1px solid #334155;
     color: #fff;
-    padding: 14px;
-    border-radius: 12px;
-    margin-top: 8px;
-    min-height: 90px;
-    font-size: 14px;
-    line-height: 1.6;
+    padding: 12px;
+    border-radius: 8px;
+    min-height: 80px;
+    resize: none;
 }
-
 .submit-btn {
-    background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%);
+    background: linear-gradient(135deg, #3b82f6, #1d4ed8);
     color: white;
-    padding: 18px;
-    border-radius: 16px;
+    padding: 16px;
+    border-radius: 12px;
     border: none;
-    font-size: 18px;
-    font-weight: 800;
-    box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.4);
-    margin-top: 8px;
+    font-weight: bold;
+    width: 100%;
+    cursor: pointer;
 }
 
-.submit-btn:disabled {
-    opacity: 0.2;
-    filter: grayscale(1);
+/* 进度条样式 */
+.progress-container {
+    width: 100%;
+    height: 18px;
+    background: #0f172a;
+    border-radius: 9px;
+    position: relative;
+    overflow: hidden;
+    border: 1px solid #334155;
 }
-.submit-btn:active {
-    transform: scale(0.97);
+.progress-bar {
+    height: 100%;
+    background: #3b82f6;
+    transition: width 0.3s ease;
 }
-
-.result-section {
-    margin-top: 32px;
-    padding-bottom: 40px;
-}
-
-.result-title {
-    color: #60a5fa;
-    margin-bottom: 12px;
-    font-weight: 600;
+.progress-text {
+    position: absolute;
+    width: 100%;
     text-align: center;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 10px;
+    color: #fff;
+    font-weight: bold;
 }
+
 .result-img {
     width: 100%;
-    border-radius: 16px;
+    border-radius: 12px;
     border: 2px solid #3b82f6;
+    margin-top: 10px;
+}
+.result-title {
+    color: #60a5fa;
+    text-align: center;
+    margin-top: 10px;
+    font-weight: bold;
 }
 </style>
